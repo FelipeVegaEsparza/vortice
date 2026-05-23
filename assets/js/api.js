@@ -195,7 +195,13 @@ export async function getAllClientData() {
 
 export async function getBasicData() {
   const base = await getApiBase();
-  return fetchJSON(`${base}/basic-data`, { cacheTTL: CACHE_TTL.basic });
+  const data = await fetchJSON(`${base}/basic-data`, { cacheTTL: CACHE_TTL.basic });
+  // La URL configurada en sonicpanel_stream_url tiene prioridad sobre la que devuelve la API
+  const configData = await config;
+  if (configData.sonicpanel_stream_url) {
+    data.radioStreamingUrl = configData.sonicpanel_stream_url;
+  }
+  return data;
 }
 
 export async function getVideoStreamingUrl() {
