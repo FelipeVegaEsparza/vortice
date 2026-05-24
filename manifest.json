@@ -1,7 +1,7 @@
 {
-  "name": "Radio Fusion Austral",
-  "short_name": "Fusion Austral",
-  "description": "Desde la Patagonia al Mundo",
+  "name": "Radio Vortice Chile",
+  "short_name": "Radio Vortice",
+  "description": "Radio Online",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
