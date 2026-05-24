@@ -267,6 +267,19 @@ app.get('/', async (req, res) => {
       html = html.replace(/from '\.\/assets\//g, `from '/templates/${currentTemplate}/assets/`);
       html = html.replace(/from "\.\/assets\//g, `from "/templates/${currentTemplate}/assets/`);
       
+      // Inyectar nombre del proyecto en meta tags (para crawlers que no ejecutan JS)
+      if (clientConfig) {
+        const projectName = clientConfig.project_name || 'Radio';
+        const projectDescription = 'Escucha nuestra radio online en vivo. Música, noticias y entretenimiento las 24 horas del día.';
+        html = html.replace(/<title>[^<]*<\/title>/, `<title>${projectName}</title>`);
+        html = html.replace(/(content=")Radio Pulse Player(")/g, `$1${projectName}$2`);
+        html = html.replace(/(content=")Radio Vortice Chile(")/g, `$1${projectName}$2`);
+        html = html.replace(/(content=")Radio Pulse(")/g, `$1${projectName}$2`);
+        html = html.replace(/(content=")Escucha nuestra radio online en vivo[^"]*(")/g, `$1${projectDescription}$2`);
+        html = html.replace(/>Radio Pulse<\/h2>/, `>${projectName}</h2>`);
+        html = html.replace(/>Radio Pulse<\/span>/, `>${projectName}</span>`);
+      }
+      
       // Headers de seguridad adicionales
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
