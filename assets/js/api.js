@@ -101,10 +101,11 @@ async function fetchWithRetry(url, options = {}, retries = DEFAULT_RETRIES, back
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), options.timeout || 10000);
     
-    // Remover opciones que no son válidas para fetch
+    // Remover opciones personalizadas que no son válidas para fetch
     const fetchOptions = { ...options };
     delete fetchOptions.cacheTTL;
-    delete fetchOptions.cache;
+    delete fetchOptions.retries;
+    delete fetchOptions.timeout;
     
     const response = await fetch(url, {
       ...fetchOptions,
@@ -169,7 +170,10 @@ async function fetchJSON(url, options = {}) {
   }
   
   try {
-    const response = await fetchWithRetry(url, options);
+    // Limpiar opciones personalizadas antes de pasar a fetchWithRetry
+    const fetchOpts = { ...options };
+    delete fetchOpts.cache;
+    const response = await fetchWithRetry(url, fetchOpts);
     const data = await response.json();
     
     // Guardar en cache
@@ -345,7 +349,7 @@ export async function getSonicPanelInfo() {
   const apiUrl = configData.sonicpanel_api_url || `https://stream.ipstream.cl/cp/get_info.php?p=${port}`;
   
   try {
-    const response = await fetchWithRetry(apiUrl, { cache: 'no-store', retries: 2 });
+    const response = await fetchWithRetry(apiUrl, { cache: 'no-store', retries: 2, timeout: 30000 });
     const data = await response.json();
     setCache(cacheKey, data, CACHE_TTL.sonic);
     return data;
