@@ -108,6 +108,10 @@ class TemplateBase {
       // Actualizar título de la página
       document.title = data.projectName || 'Radio';
       
+      // Actualizar meta tags para compartir
+      const imageUrl = data.coverUrl ? await this.dataManager.getImageUrl(data.coverUrl) : null;
+      this.updateSocialMetaTags(data.projectName || 'Radio', data.description || 'Escucha nuestra radio online en vivo', imageUrl);
+      
       // Notificar al template hijo
       this.onBasicDataLoaded(data);
       
@@ -243,6 +247,41 @@ class TemplateBase {
     if (dateElement) {
       const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
       dateElement.textContent = new Date().toLocaleDateString('es-ES', options);
+    }
+  }
+
+  // Actualizar meta tags para compartir en redes sociales
+  updateSocialMetaTags(name, description, imageUrl) {
+    const currentUrl = window.location.href;
+    const updates = {
+      'description': description,
+      'author': name,
+      'application-name': name,
+      'apple-mobile-web-app-title': name,
+      'og:title': name,
+      'og:description': description,
+      'og:url': currentUrl,
+      'og:site_name': name,
+      'twitter:title': name,
+      'twitter:description': description,
+      'twitter:card': 'summary_large_image'
+    };
+    if (imageUrl) {
+      updates['og:image'] = imageUrl;
+      updates['twitter:image'] = imageUrl;
+    }
+    for (const [attrValue, content] of Object.entries(updates)) {
+      let meta = document.querySelector(`meta[property="${attrValue}"]`) ||
+                 document.querySelector(`meta[name="${attrValue}"]`);
+      if (meta) {
+        meta.setAttribute('content', content);
+      } else {
+        meta = document.createElement('meta');
+        const attr = attrValue.startsWith('og:') ? 'property' : 'name';
+        meta.setAttribute(attr, attrValue);
+        meta.setAttribute('content', content);
+        document.head.appendChild(meta);
+      }
     }
   }
 
