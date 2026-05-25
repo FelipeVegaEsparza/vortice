@@ -164,12 +164,8 @@ class TemplateBase {
       console.log('TemplateBase: Set title to:', titleEl.textContent);
     }
     if (artistEl) {
-      // Extract artist from fullTitle if it has "Artist - Title" format
-      let artist = 'En Vivo';
-      if (songData.fullTitle && songData.fullTitle.includes(' - ')) {
-        const parts = songData.fullTitle.split(' - ');
-        artist = parts[0].trim(); // Get artist name
-      } else if (songData.djUsername) {
+      let artist = songData.artist || 'En Vivo';
+      if (artist === 'En Vivo' && songData.djUsername) {
         artist = songData.djUsername;
       }
       artistEl.textContent = artist;

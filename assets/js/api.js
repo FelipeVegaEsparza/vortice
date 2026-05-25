@@ -28,6 +28,12 @@ function getCached(key) {
   return item.data;
 }
 
+function getStaleCached(key) {
+  const item = cache.get(key);
+  if (!item) return null;
+  return item.data;
+}
+
 function setCache(key, data, ttl = CACHE_TTL.default) {
   cache.set(key, {
     data,
@@ -354,6 +360,11 @@ export async function getSonicPanelInfo() {
     setCache(cacheKey, data, CACHE_TTL.sonic);
     return data;
   } catch (error) {
+    const staleData = getStaleCached(cacheKey);
+    if (staleData) {
+      secureLog.warn('Using stale SonicPanel data as fallback');
+      return staleData;
+    }
     secureLog.error('Error fetching SonicPanel info:', error);
     throw error;
   }
