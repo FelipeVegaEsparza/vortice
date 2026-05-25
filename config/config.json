@@ -5,7 +5,7 @@
   "sonicpanel_port": "8004",
   "ipstream_base_url": "https://dashboard.ipstream.cl/api/public",
   "sonicpanel_stream_url": "https://stream2.ipstream.cl/8004/stream",
-  "sonicpanel_api_url": "https://stream.ipstream.cl/cp/get_info.php?p=8004",
+  "sonicpanel_api_url": "https://stream2.ipstream.cl/cp/get_info.php?p=8004",
   "cache_version": "v1",
   "offline_page": "/offline.html",
   "pagination": {
