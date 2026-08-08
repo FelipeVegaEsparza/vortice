@@ -45,6 +45,9 @@ class AudioPlayer {
 
     // Audio element events
     if (this.audioElement) {
+      this.shouldBePlaying = false;
+      this.isInterrupted = false;
+
       this.audioElement.addEventListener('loadstart', () => {
         console.log('AudioPlayer: Loading started');
       });
@@ -59,20 +62,69 @@ class AudioPlayer {
       });
 
       this.audioElement.addEventListener('play', () => {
+        this.shouldBePlaying = true;
+        this.isInterrupted = false;
         this.isPlaying = true;
         this.onPlayCallback();
       });
 
       this.audioElement.addEventListener('pause', () => {
+        if (this.shouldBePlaying && (document.hidden || !document.hasFocus())) {
+          this.isInterrupted = true;
+        } else {
+          this.shouldBePlaying = false;
+        }
         this.isPlaying = false;
         this.onPauseCallback();
       });
+
+      this.audioElement.addEventListener('stalled', () => {
+        console.warn('AudioPlayer: Stream stalled, will retry on resume');
+      });
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && this.isInterrupted && this.shouldBePlaying) {
+        this.isInterrupted = false;
+        console.log('AudioPlayer: Resuming after interruption');
+        this.audioElement.play().catch(err => {
+          console.warn('AudioPlayer: Resume after interruption failed:', err);
+        });
+      }
+    });
+
+    window.addEventListener('focus', () => {
+      if (this.isInterrupted && this.shouldBePlaying) {
+        this.isInterrupted = false;
+        console.log('AudioPlayer: Resuming on focus');
+        this.audioElement.play().catch(err => {
+          console.warn('AudioPlayer: Resume on focus failed:', err);
+        });
+      }
+    });
+
+    this.setupMediaSession();
+  }
+
+  setupMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'Radio en vivo',
+        artist: 'Streaming en directo',
+        album: ''
+      });
+      navigator.mediaSession.setActionHandler('play',  () => this.play());
+      navigator.mediaSession.setActionHandler('pause', () => this.pause());
+    } catch (e) {
+      console.warn('AudioPlayer: MediaSession setup failed:', e);
     }
   }
 
   // Establecer URL del stream
   setStreamUrl(url) {
     this.streamUrl = url;
+    this.setupMediaSession();
     console.log('AudioPlayer: Stream URL set to:', url);
   }
 
@@ -83,13 +135,24 @@ class AudioPlayer {
       return Promise.reject(new Error('Missing audio element or stream URL'));
     }
 
-    this.audioElement.src = this.streamUrl;
+    if (this.shouldBePlaying && !this.audioElement.paused) {
+      return Promise.resolve();
+    }
+
+    if (this.audioElement.src !== this.streamUrl) {
+      this.audioElement.src = this.streamUrl;
+    }
     this.audioElement.volume = this.currentVolume / 100;
+    this.shouldBePlaying = true;
+    this.isInterrupted = false;
 
     return this.audioElement.play()
       .then(() => {
         console.log('AudioPlayer: Playing successfully');
         this.isPlaying = true;
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'playing';
+        }
         this.onPlayCallback();
       })
       .catch(error => {
@@ -102,9 +165,14 @@ class AudioPlayer {
   // Pausar
   pause() {
     if (!this.audioElement) return;
-    
+
+    this.shouldBePlaying = false;
+    this.isInterrupted = false;
     this.audioElement.pause();
     this.isPlaying = false;
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'paused';
+    }
     this.onPauseCallback();
   }
 

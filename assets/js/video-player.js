@@ -68,12 +68,13 @@ class VideoPlayer {
 
     const playerHTML = `
       <div class="video-player-wrapper">
-        <video 
+        <video
           id="${this.containerId}-video"
           class="video-player"
           ${this.options.controls ? 'controls' : ''}
           ${this.options.muted ? 'muted' : ''}
           ${this.options.poster ? `poster="${this.options.poster}"` : ''}
+          playsinline
           preload="metadata"
         >
           Tu navegador no soporta el elemento video.
@@ -131,7 +132,7 @@ class VideoPlayer {
     // Volume control
     const volumeBtn = document.getElementById(`${this.containerId}-volume-btn`);
     const volumeSlider = document.getElementById(`${this.containerId}-volume-slider`);
-    
+
     volumeBtn?.addEventListener('click', () => this.toggleMute());
     volumeSlider?.addEventListener('input', (e) => this.setVolume(e.target.value / 100));
 
@@ -145,11 +146,63 @@ class VideoPlayer {
 
     // Video events
     if (this.videoElement) {
+      this.shouldBePlaying = false;
+      this.isInterrupted = false;
+
       this.videoElement.addEventListener('loadstart', () => this.showLoading());
       this.videoElement.addEventListener('canplay', () => this.hideLoading());
       this.videoElement.addEventListener('error', () => this.showError());
-      this.videoElement.addEventListener('play', () => this.onPlay());
-      this.videoElement.addEventListener('pause', () => this.onPause());
+
+      this.videoElement.addEventListener('play', () => {
+        this.shouldBePlaying = true;
+        this.isInterrupted = false;
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'playing';
+        }
+        this.onPlay();
+      });
+
+      this.videoElement.addEventListener('pause', () => {
+        if (this.shouldBePlaying && (document.hidden || !document.hasFocus())) {
+          this.isInterrupted = true;
+        } else {
+          this.shouldBePlaying = false;
+        }
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'paused';
+        }
+        this.onPause();
+      });
+
+      this.resumeIfInterrupted = () => {
+        if (this.isInterrupted && this.shouldBePlaying && this.videoElement.paused) {
+          this.isInterrupted = false;
+          console.log('VideoPlayer: Resuming after interruption');
+          this.videoElement.play().catch(err => {
+            console.warn('VideoPlayer: Resume after interruption failed:', err);
+          });
+        }
+      };
+
+      document.addEventListener('visibilitychange', this.resumeIfInterrupted);
+      window.addEventListener('focus', this.resumeIfInterrupted);
+
+      this.setupMediaSession();
+    }
+  }
+
+  setupMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'TV en vivo',
+        artist: 'Streaming en directo',
+        album: ''
+      });
+      navigator.mediaSession.setActionHandler('play',  () => this.play());
+      navigator.mediaSession.setActionHandler('pause', () => this.pause());
+    } catch (e) {
+      console.warn('VideoPlayer: MediaSession setup failed:', e);
     }
   }
 
@@ -215,6 +268,8 @@ class VideoPlayer {
 
   play() {
     if (this.videoElement) {
+      this.shouldBePlaying = true;
+      this.isInterrupted = false;
       this.videoElement.play().catch(error => {
         console.error('VideoPlayer: Error playing video:', error);
         this.showError();
@@ -224,6 +279,8 @@ class VideoPlayer {
 
   pause() {
     if (this.videoElement) {
+      this.shouldBePlaying = false;
+      this.isInterrupted = false;
       this.videoElement.pause();
     }
   }
@@ -325,11 +382,17 @@ class VideoPlayer {
   }
 
   destroy() {
+    if (this.resumeIfInterrupted) {
+      document.removeEventListener('visibilitychange', this.resumeIfInterrupted);
+      window.removeEventListener('focus', this.resumeIfInterrupted);
+      this.resumeIfInterrupted = null;
+    }
+
     if (this.hls) {
       this.hls.destroy();
       this.hls = null;
     }
-    
+
     if (this.videoElement) {
       this.videoElement.pause();
       this.videoElement.src = '';

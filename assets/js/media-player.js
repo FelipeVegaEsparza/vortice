@@ -200,40 +200,118 @@ class MediaPlayer {
   setupRadioPlayer() {
     const audioElement = document.getElementById(`${this.containerId}-radio-audio`);
     const playButton = document.getElementById(`${this.containerId}-radio-play`);
-    
+
     if (!audioElement || !playButton) return;
 
     let isPlaying = false;
+    let shouldBePlaying = false;
+    let isInterrupted = false;
+
+    const updateButton = () => {
+      playButton.innerHTML = isPlaying
+        ? '<i class="fas fa-pause"></i>'
+        : '<i class="fas fa-play"></i>';
+    };
+
+    const resumeIfInterrupted = () => {
+      if (isInterrupted && shouldBePlaying && !isPlaying) {
+        isInterrupted = false;
+        console.log('MediaPlayer: Resuming radio after interruption');
+        audioElement.play().catch(err => {
+          console.warn('MediaPlayer: Resume after interruption failed:', err);
+        });
+      }
+    };
+
+    const setupMediaSession = () => {
+      if (!('mediaSession' in navigator)) return;
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'Radio en vivo',
+          artist: 'Streaming en directo',
+          album: ''
+        });
+        navigator.mediaSession.setActionHandler('play',  () => playRadio());
+        navigator.mediaSession.setActionHandler('pause', () => pauseRadio());
+      } catch (e) {
+        console.warn('MediaPlayer: MediaSession setup failed:', e);
+      }
+    };
+
+    const playRadio = () => {
+      if (this.radioStreamUrl) {
+        if (audioElement.src !== this.radioStreamUrl) {
+          audioElement.src = this.radioStreamUrl;
+        }
+        shouldBePlaying = true;
+        isInterrupted = false;
+        audioElement.play().then(() => {
+          isPlaying = true;
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'playing';
+          }
+          updateButton();
+        }).catch(error => {
+          console.error('MediaPlayer: Error playing radio:', error);
+        });
+      }
+    };
+
+    const pauseRadio = () => {
+      shouldBePlaying = false;
+      isInterrupted = false;
+      audioElement.pause();
+      isPlaying = false;
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'paused';
+      }
+      updateButton();
+    };
 
     playButton.addEventListener('click', () => {
       if (isPlaying) {
-        audioElement.pause();
-        playButton.innerHTML = '<i class="fas fa-play"></i>';
-        isPlaying = false;
+        pauseRadio();
       } else {
-        if (this.radioStreamUrl) {
-          audioElement.src = this.radioStreamUrl;
-          audioElement.play().then(() => {
-            playButton.innerHTML = '<i class="fas fa-pause"></i>';
-            isPlaying = true;
-          }).catch(error => {
-            console.error('MediaPlayer: Error playing radio:', error);
-          });
-        }
+        playRadio();
       }
     });
 
     audioElement.addEventListener('pause', () => {
-      playButton.innerHTML = '<i class="fas fa-play"></i>';
+      if (shouldBePlaying && (document.hidden || !document.hasFocus())) {
+        isInterrupted = true;
+      } else {
+        shouldBePlaying = false;
+      }
       isPlaying = false;
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'paused';
+      }
+      updateButton();
     });
 
     audioElement.addEventListener('play', () => {
-      playButton.innerHTML = '<i class="fas fa-pause"></i>';
+      shouldBePlaying = true;
+      isInterrupted = false;
       isPlaying = true;
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'playing';
+      }
+      updateButton();
     });
 
-    this.radioPlayer = { audioElement, playButton, isPlaying: () => isPlaying };
+    document.addEventListener('visibilitychange', resumeIfInterrupted);
+    window.addEventListener('focus', resumeIfInterrupted);
+
+    setupMediaSession();
+
+    this.radioPlayer = {
+      audioElement,
+      playButton,
+      isPlaying: () => isPlaying,
+      shouldBePlaying: () => shouldBePlaying,
+      isInterrupted: () => isInterrupted,
+      resume: resumeIfInterrupted
+    };
   }
 
   initializeVideoPlayer() {

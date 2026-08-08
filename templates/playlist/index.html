@@ -617,7 +617,7 @@
   </div>
 
   <!-- Audio Element -->
-  <audio id="radio-stream" preload="none"></audio>
+  <audio id="radio-stream" preload="none" playsinline></audio>
 
   <!-- Loading Overlay -->
   <div class="loading-overlay" id="loading-overlay">
@@ -681,7 +681,7 @@
           <p id="podcast-modal-description">Podcast description</p>
         </div>
         <div class="podcast-player">
-          <audio controls id="podcast-audio" style="width: 100%;">
+          <audio controls id="podcast-audio" style="width: 100%;" playsinline>
             <!-- Audio source will be loaded here -->
           </audio>
         </div>
