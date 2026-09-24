@@ -36,6 +36,10 @@ class AudioPlayer {
     this.resumeFailures = 0;
     this.lastResumeAttemptAt = 0;
     this.mediaSessionHandlersSet = false;
+    // Marca que hubo una interrupción del sistema pendiente de reenganchar.
+    // iOS puede reanudar el elemento viejo SOLO (event play) pero en silencio,
+    // así que al volver a primer plano forzamos recrear el elemento.
+    this.interruptionSeen = false;
     // Tras N fallos seguidos el watchdog deja de reintentar solo (evita loops
     // y batería); el primer gesto del usuario vuelve a intentarlo.
     this.maxResumeFailures = options.maxResumeFailures || 6;
@@ -87,6 +91,17 @@ class AudioPlayer {
     this.boundResumeIfInterrupted = () => {
       if (document.hidden) return;
       this.debugLog('visibility/focus visible');
+      // En iOS, tras una interrupción, el sistema puede haber reanudado el
+      // elemento viejo en silencio. Forzamos recrear el <audio> para
+      // garantizar sonido, aunque el elemento diga que está reproduciendo.
+      if (this.isIOS && this.shouldBePlaying && this.interruptionSeen) {
+        this.debugLog('foreground tras interrupcion -> recrear');
+        this.interruptionSeen = false;
+        this.isInterrupted = true;
+        this.lastRecreateAt = 0; // permitir recreación inmediata
+        this.recreateAudioElement();
+        return;
+      }
       this.resumeIfInterrupted();
     };
     document.addEventListener('visibilitychange', this.boundResumeIfInterrupted);
@@ -173,9 +188,11 @@ class AudioPlayer {
       if (this.userPaused) {
         this.shouldBePlaying = false;
         this.isInterrupted = false;
+        this.interruptionSeen = false;
         this.savePlayIntent(false);
       } else if (this.shouldBePlaying) {
         this.isInterrupted = true;
+        this.interruptionSeen = true;
         this.savePlayIntent(true);
         if ('mediaSession' in navigator) {
           navigator.mediaSession.playbackState = 'paused';
@@ -226,6 +243,7 @@ class AudioPlayer {
     const now = Date.now();
     if (now - this.lastRecreateAt < 1000) return; // evita recreaciones dobles
     this.lastRecreateAt = now;
+    this.interruptionSeen = false;
 
     const old = this.audioElement;
     if (!old) return;
@@ -340,10 +358,15 @@ class AudioPlayer {
         taps++;
         if (taps >= 5) {
           taps = 0;
-          try { localStorage.setItem('audio:debug', '1'); } catch (e) {}
-          this.debugEnabled = true;
-          this.enableDebugPanel();
-          this.debugLog('debug ON');
+          const on = !this.debugEnabled;
+          this.debugEnabled = on;
+          try { localStorage.setItem('audio:debug', on ? '1' : '0'); } catch (e) {}
+          if (on) {
+            this.enableDebugPanel();
+            this.debugLog('debug ON');
+          } else {
+            this.disableDebugPanel();
+          }
         }
       });
     }
@@ -377,6 +400,14 @@ class AudioPlayer {
 
   renderDebug() {
     if (this._debugEl) this._debugEl.textContent = this.debugLines.join('\n');
+  }
+
+  disableDebugPanel() {
+    if (this._debugEl && this._debugEl.parentNode) {
+      this._debugEl.parentNode.removeChild(this._debugEl);
+    }
+    this._debugEl = null;
+    this.debugLines = [];
   }
 
   debugLog(msg) {
@@ -478,7 +509,7 @@ class AudioPlayer {
 
     // Si venimos de una interrupción, recreamos el elemento para asegurar
     // una sesión de audio nueva (evita el estado silencioso en iOS).
-    const needsReengage = this.isInterrupted;
+    const needsReengage = this.isInterrupted || this.interruptionSeen;
 
     this.shouldBePlaying = true;
     this.isInterrupted = false;
@@ -525,6 +556,7 @@ class AudioPlayer {
     this.userPaused = true;
     this.shouldBePlaying = false;
     this.isInterrupted = false;
+    this.interruptionSeen = false;
     this.savePlayIntent(false);
     this.audioElement.pause();
     this.isPlaying = false;
@@ -538,7 +570,7 @@ class AudioPlayer {
   toggle() {
     // Tras una interrupción del sistema, el primer toque en Play debe
     // REENGGANCHAR (recrear el elemento) en lugar de alternar a pausa.
-    if (this.isInterrupted) {
+    if (this.isInterrupted || this.interruptionSeen) {
       this.shouldBePlaying = true;
       this.savePlayIntent(true);
       this.debugLog('toggle -> reengage');
