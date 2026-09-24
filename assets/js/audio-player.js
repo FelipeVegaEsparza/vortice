@@ -92,6 +92,9 @@ class AudioPlayer {
       if (document.hidden) return;
       this.debugLog('visibility/focus visible');
       this.resumeIfInterrupted();
+      // Red de seguridad: si al volver el stream quedó sin datos (stalled
+      // durante el segundo plano), recargar la fuente.
+      if (this.shouldBePlaying) this.scheduleStallRecovery();
     };
     document.addEventListener('visibilitychange', this.boundResumeIfInterrupted);
     window.addEventListener('focus', this.boundResumeIfInterrupted);
