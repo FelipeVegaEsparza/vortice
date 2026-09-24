@@ -2,13 +2,15 @@
  * AudioPlayer - Maneja toda la lógica del reproductor de audio
  * Centralizado para todos los templates
  *
- * Nota importante sobre iOS:
- * Cuando entra/sale una llamada, iOS pausa el <audio> y la sesión de audio
- * queda inactiva. En muchos casos play() se resuelve pero el audio queda en
- * SILENCIO. La forma fiable de recuperarlo es reemplazar el elemento <audio>
- * por uno nuevo (sesión de audio nueva). Lo hacemos automáticamente cuando la
- * llamada termina y la app vuelve a primer plano (visibilitychange/focus/
- * pageshow) y también desde el watchdog si el sistema no dispara esos eventos.
+ * Estrategia para interrupciones (llamadas) en iOS/Android:
+ * Se mantiene UN ÚNICO elemento <audio> durante toda la sesión (nunca se
+ * recrea). iOS/WebKit reanuda el mismo elemento tras la llamada; recrearlo
+ * o llamar play() desde eventos que no son un gesto del usuario provoca
+ * NotAllowedError y deja el audio muerto. Por eso:
+ *   - No se reemplaza nunca el elemento.
+ *   - Sólo se llama play() al reanudar si el elemento está pausado.
+ *   - Si el navegador rechaza play(), el primer toque/gesto del usuario (o el
+ *     botón Play de la pantalla de bloqueo) lo reanuda.
  */
 class AudioPlayer {
   constructor(options = {}) {
@@ -32,14 +34,9 @@ class AudioPlayer {
     this.resumeWatchdog = null;
     this.boundResumeIfInterrupted = null;
     this.boundGestureResume = null;
-    this.lastRecreateAt = 0;
-    this.resumeFailures = 0;
     this.lastResumeAttemptAt = 0;
+    this.resumeFailures = 0;
     this.mediaSessionHandlersSet = false;
-    // Marca que hubo una interrupción del sistema pendiente de reenganchar.
-    // iOS puede reanudar el elemento viejo SOLO (event play) pero en silencio,
-    // así que al volver a primer plano forzamos recrear el elemento.
-    this.interruptionSeen = false;
     // Tras N fallos seguidos el watchdog deja de reintentar solo (evita loops
     // y batería); el primer gesto del usuario vuelve a intentarlo.
     this.maxResumeFailures = options.maxResumeFailures || 6;
@@ -78,7 +75,6 @@ class AudioPlayer {
       volumeSlider.addEventListener('input', (e) => {
         this.setVolume(e.target.value);
       });
-      // Set initial volume
       volumeSlider.value = this.currentVolume;
     }
 
@@ -87,21 +83,10 @@ class AudioPlayer {
       this.bindAudioElement(this.audioElement);
     }
 
-    // Al terminar la llamada la app vuelve a primer plano: reconectar.
+    // Al terminar la llamada la app vuelve a primer plano: reanudar.
     this.boundResumeIfInterrupted = () => {
       if (document.hidden) return;
       this.debugLog('visibility/focus visible');
-      // En iOS, tras una interrupción, el sistema puede haber reanudado el
-      // elemento viejo en silencio. Forzamos recrear el <audio> para
-      // garantizar sonido, aunque el elemento diga que está reproduciendo.
-      if (this.isIOS && this.shouldBePlaying && this.interruptionSeen) {
-        this.debugLog('foreground tras interrupcion -> recrear');
-        this.interruptionSeen = false;
-        this.isInterrupted = true;
-        this.lastRecreateAt = 0; // permitir recreación inmediata
-        this.recreateAudioElement();
-        return;
-      }
       this.resumeIfInterrupted();
     };
     document.addEventListener('visibilitychange', this.boundResumeIfInterrupted);
@@ -129,23 +114,13 @@ class AudioPlayer {
     this.setupMediaSession();
   }
 
-  // (Re)vincular los eventos del elemento <audio>. Necesario porque podemos
-  // reemplazar el elemento por uno nuevo cuando iOS deja la sesión inactiva.
+  // Vincular los eventos del elemento <audio>
   bindAudioElement(el) {
-    const isCurrent = () => el === this.audioElement;
-
     el.addEventListener('loadstart', () => {
-      if (!isCurrent()) return;
-      console.log('AudioPlayer: Loading started');
-    });
-
-    el.addEventListener('canplay', () => {
-      if (!isCurrent()) return;
-      console.log('AudioPlayer: Can play');
+      this.debugLog('event loadstart');
     });
 
     el.addEventListener('error', (e) => {
-      if (!isCurrent()) return;
       const code = e && e.target && e.target.error ? e.target.error.code : '?';
       this.debugLog('event error code=' + code);
       console.error('AudioPlayer: Audio error:', e);
@@ -153,7 +128,6 @@ class AudioPlayer {
     });
 
     el.addEventListener('play', () => {
-      if (!isCurrent()) return;
       this.debugLog('event play');
       this.shouldBePlaying = true;
       this.isInterrupted = false;
@@ -167,148 +141,77 @@ class AudioPlayer {
       this.onPlayCallback();
     });
 
-    // Confirma que la reproducción realmente comenzó (verificación tras un
-    // play() que puede resolverse sin sonar en iOS)
     el.addEventListener('playing', () => {
-      if (!isCurrent()) return;
       this.isPlaying = true;
       this.isInterrupted = false;
       this.resumeFailures = 0;
       this.debugLog('event playing');
-      console.log('AudioPlayer: reproducción en curso');
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'playing';
+      }
     });
 
     // Un pause solo cuenta como acción del usuario si vino de pause().
     // Cualquier otro pause (llamada, Siri, segundo plano, alarma) es una
-    // interrupción del sistema que debemos reconectar luego.
+    // interrupción del sistema que recordamos para reanudar luego.
     el.addEventListener('pause', () => {
-      if (!isCurrent()) return;
       this.debugLog('event pause userPaused=' + this.userPaused);
       this.isPlaying = false;
       if (this.userPaused) {
         this.shouldBePlaying = false;
         this.isInterrupted = false;
-        this.interruptionSeen = false;
         this.savePlayIntent(false);
       } else if (this.shouldBePlaying) {
         this.isInterrupted = true;
-        this.interruptionSeen = true;
         this.savePlayIntent(true);
-        if ('mediaSession' in navigator) {
-          navigator.mediaSession.playbackState = 'paused';
-        }
       }
       this.onPauseCallback();
     });
 
     el.addEventListener('stalled', () => {
-      if (!isCurrent()) return;
-      console.warn('AudioPlayer: Stream stalled, will retry on resume');
+      this.debugLog('event stalled');
     });
 
     el.addEventListener('ended', () => {
-      if (!isCurrent()) return;
-      // Un stream en vivo no debería terminar; si pasa, marcamos para que el
-      // watchdog/visibility reconecten con backoff y tope (sin loops).
+      this.debugLog('event ended');
       if (this.shouldBePlaying) {
         this.isInterrupted = true;
         this.savePlayIntent(true);
-        console.log('AudioPlayer: stream finalizó, se reconectará');
       }
     });
   }
 
-  // Reconectar automáticamente si el sistema interrumpió la reproducción.
+  // Reanudar si el sistema interrumpió la reproducción.
+  // Sólo reproduce si el elemento está pausado; si ya está sonando, no hace
+  // nada (así no interferimos con la reanudación que hace el propio iOS).
   resumeIfInterrupted() {
     const el = this.audioElement;
     if (!el || !this.shouldBePlaying) return;
-    if (!el.paused && !el.ended && !this.isInterrupted) return;
+    if (!el.paused && !el.ended) return;
 
     this.debugLog('resume paused=' + el.paused + ' ended=' + el.ended +
-      ' interrupted=' + this.isInterrupted + ' rs=' + el.readyState);
+      ' rs=' + el.readyState);
     this.isInterrupted = false;
     this.lastResumeAttemptAt = Date.now();
-    console.log('AudioPlayer: Reanudando tras interrupción');
 
-    // Reemplazamos el elemento (sesión de audio nueva) y reconectamos.
-    // Es la forma fiable de recuperar el sonido tras una llamada en iOS.
-    this.recreateAudioElement();
-  }
-
-  // Reemplaza el elemento <audio> por uno nuevo y reproduce el stream en vivo.
-  recreateAudioElement() {
-    // Salvaguarda: nunca crear/reproducir si no corresponde seguir sonando.
-    if (!this.shouldBePlaying) return;
-
-    const now = Date.now();
-    if (now - this.lastRecreateAt < 1000) return; // evita recreaciones dobles
-    this.lastRecreateAt = now;
-    this.interruptionSeen = false;
-
-    const old = this.audioElement;
-    if (!old) return;
-
-    this.debugLog('recreate element');
-    // Copiamos TODOS los atributos del elemento anterior (id, preload,
-    // playsinline, crossorigin, etc.) para no alterar su configuración.
-    const el = document.createElement('audio');
-    Array.from(old.attributes).forEach(attr => {
-      if (attr.name === 'src') return;
-      el.setAttribute(attr.name, attr.value);
-    });
-    el.volume = this.currentVolume / 100;
-
-    // Asignamos el nuevo como actual ANTES de tocar el viejo, para que los
-    // eventos del elemento viejo (pause/error) se ignoren vía isCurrent().
-    this.audioElement = el;
-
-    // Cerrar conexión y eventos del elemento anterior (evita un segundo
-    // stream duplicado).
-    try {
-      old.pause();
-      old.removeAttribute('src');
-      old.load();
-    } catch (e) {}
-
-    if (old.parentNode) {
-      old.parentNode.replaceChild(el, old);
-    } else if (document.body) {
-      document.body.appendChild(el);
+    // Stream en vivo terminado/errado: recargar la fuente (sin recrear nodo)
+    if (el.ended || el.error || el.networkState === 3) {
+      el.src = this.streamUrl;
+      try { el.load(); } catch (e) {}
     }
 
-    this.bindAudioElement(el);
-    console.log('AudioPlayer: elemento <audio> recreado');
-    this.playFresh(el);
-  }
-
-  // Cargar y reproducir el stream con la MISMA URL (el elemento nuevo ya
-  // fuerza una conexión nueva; no alteramos la URL original).
-  playFresh(el) {
-    if (!this.streamUrl) return;
-    this.debugLog('playFresh should=' + this.shouldBePlaying);
-    el.src = this.streamUrl;
-    try { el.load(); } catch (e) {}
-
-    if (!this.shouldBePlaying) return;
     const promise = el.play();
     if (promise && promise.catch) {
       promise.catch(err => {
-        this.debugLog('playFresh ERR ' + (err && err.name));
-        console.warn('AudioPlayer: play() tras recrear falló, se reintentará:', err);
+        this.debugLog('resume play ERR ' + (err && err.name));
         this.isInterrupted = true;
         this.resumeFailures = (this.resumeFailures || 0) + 1;
       });
     }
   }
 
-  // Alias de compatibilidad
-  reconnectStream() {
-    this.recreateAudioElement();
-  }
-
   // Vigilante: solo actúa cuando el audio está PAUSADO (interrupción real).
-  // No toca streams que están cargando/buffering (el.paused === false), así no
-  // genera reconexiones innecesarias en condiciones normales.
+  // No toca streams que están cargando/buffering (el.paused === false).
   startResumeWatchdog() {
     this.stopResumeWatchdog();
     this.resumeWatchdog = setInterval(() => {
@@ -317,7 +220,6 @@ class AudioPlayer {
       if (!el.paused) return;
 
       this.isInterrupted = true;
-      // Tope de reintentos + backoff: evita loops y consumo innecesario.
       if ((this.resumeFailures || 0) >= this.maxResumeFailures) return;
       const cooldown = Math.min(60000, 5000 * ((this.resumeFailures || 0) + 1));
       if (Date.now() - this.lastResumeAttemptAt >= cooldown) {
@@ -334,8 +236,8 @@ class AudioPlayer {
   }
 
   // ---------------------------------------------------------------------------
-  // Diagnóstico en pantalla (solo desarrollo). Se activa tocando 5 veces el
-  // marcador de versión del footer, o con ?debug en la URL. No afecta al audio.
+  // Diagnóstico en pantalla (solo desarrollo). Se activa/apaga tocando 5 veces
+  // el marcador de versión del footer, o con ?debug en la URL. No afecta al audio.
   // ---------------------------------------------------------------------------
   setupDebug() {
     this.debugEnabled = false;
@@ -347,7 +249,6 @@ class AudioPlayer {
     } catch (e) {}
     if (this.debugEnabled) this.enableDebugPanel();
 
-    // Trigger oculto: 5 toques rápidos en el marcador .app-version
     const marker = document.querySelector('.app-version');
     if (marker) {
       let taps = 0, lastTap = 0;
@@ -424,9 +325,6 @@ class AudioPlayer {
   setupMediaSession() {
     if (!('mediaSession' in navigator)) return;
     try {
-      // Mantener metadata + estado vivos permite que la pantalla de bloqueo
-      // siga mostrando los controles durante la llamada. Al pulsar play ahí
-      // (cuando la app está en segundo plano) reconectamos el audio.
       try {
         navigator.mediaSession.metadata = new MediaMetadata({
           title: 'Radio en vivo',
@@ -448,11 +346,7 @@ class AudioPlayer {
       setHandler('play', () => {
         this.shouldBePlaying = true;
         this.savePlayIntent(true);
-        if (this.isInterrupted || (this.audioElement && this.audioElement.paused)) {
-          this.recreateAudioElement();
-        } else {
-          this.play();
-        }
+        this.resumeIfInterrupted();
       });
       setHandler('pause', () => this.pause());
       setHandler('stop', () => this.pause());
@@ -469,7 +363,7 @@ class AudioPlayer {
     console.log('AudioPlayer: Stream URL set to:', url);
 
     // Si antes de la suspensión/recarga el usuario estaba escuchando,
-    // reanudar apenas haya URL.
+    // intentar reanudar apenas haya URL.
     if (this.readPlayIntent()) {
       this.shouldBePlaying = true;
       this.debugLog('intent=playing -> resume en 400ms');
@@ -483,8 +377,6 @@ class AudioPlayer {
       if (!raw) return false;
       const data = JSON.parse(raw);
       if (!data || !data.playing) return false;
-      // Solo reanudar si la escucha fue reciente (cubre el caso de una
-      // llamada o suspensión, sin auto-reproducir días después).
       const maxAge = 10 * 60 * 1000;
       return (Date.now() - (data.ts || 0)) <= maxAge;
     } catch (e) {
@@ -495,9 +387,7 @@ class AudioPlayer {
   savePlayIntent(playing) {
     try {
       localStorage.setItem(this.storageKey, JSON.stringify({ playing: !!playing, ts: Date.now() }));
-    } catch (e) {
-      // localStorage puede fallar en modo privado
-    }
+    } catch (e) {}
   }
 
   // Reproducir
@@ -507,20 +397,11 @@ class AudioPlayer {
       return Promise.reject(new Error('Missing audio element or stream URL'));
     }
 
-    // Si venimos de una interrupción, recreamos el elemento para asegurar
-    // una sesión de audio nueva (evita el estado silencioso en iOS).
-    const needsReengage = this.isInterrupted || this.interruptionSeen;
-
     this.shouldBePlaying = true;
     this.isInterrupted = false;
     this.userPaused = false;
     this.resumeFailures = 0;
     this.savePlayIntent(true);
-
-    if (needsReengage) {
-      this.recreateAudioElement();
-      return Promise.resolve();
-    }
 
     if (!this.audioElement.paused) {
       return Promise.resolve();
@@ -556,7 +437,6 @@ class AudioPlayer {
     this.userPaused = true;
     this.shouldBePlaying = false;
     this.isInterrupted = false;
-    this.interruptionSeen = false;
     this.savePlayIntent(false);
     this.audioElement.pause();
     this.isPlaying = false;
@@ -568,15 +448,6 @@ class AudioPlayer {
 
   // Toggle play/pause
   toggle() {
-    // Tras una interrupción del sistema, el primer toque en Play debe
-    // REENGGANCHAR (recrear el elemento) en lugar de alternar a pausa.
-    if (this.isInterrupted || this.interruptionSeen) {
-      this.shouldBePlaying = true;
-      this.savePlayIntent(true);
-      this.debugLog('toggle -> reengage');
-      this.recreateAudioElement();
-      return;
-    }
     if (this.isPlaying) {
       this.pause();
     } else {
@@ -609,7 +480,8 @@ class AudioPlayer {
     this.onErrorCallback(error);
   }
 
-  // Destruir el reproductor
+  // Destruir el reproductor: solo limpia listeners/timers. NO pausa ni borra
+  // el src para no matar el audio en segundo plano (pagehide/background).
   destroy() {
     this.stopResumeWatchdog();
 
@@ -628,13 +500,6 @@ class AudioPlayer {
       document.removeEventListener('touchend', this.boundGestureResume);
       document.removeEventListener('click', this.boundGestureResume);
       this.boundGestureResume = null;
-    }
-
-    // Pausar sin borrar la intención de reproducir: si iOS recarga la PWA
-    // tras la interrupción, queremos poder reanudar.
-    if (this.audioElement) {
-      try { this.audioElement.pause(); } catch (e) {}
-      this.audioElement.src = '';
     }
   }
 }
