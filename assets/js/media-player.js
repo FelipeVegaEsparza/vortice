@@ -206,6 +206,7 @@ class MediaPlayer {
     let isPlaying = false;
     let shouldBePlaying = false;
     let isInterrupted = false;
+    let userPaused = false;
 
     const updateButton = () => {
       playButton.innerHTML = isPlaying
@@ -214,13 +215,18 @@ class MediaPlayer {
     };
 
     const resumeIfInterrupted = () => {
-      if (isInterrupted && shouldBePlaying && !isPlaying) {
-        isInterrupted = false;
-        console.log('MediaPlayer: Resuming radio after interruption');
-        audioElement.play().catch(err => {
-          console.warn('MediaPlayer: Resume after interruption failed:', err);
-        });
+      if (!shouldBePlaying) return;
+      if (!audioElement.paused && !audioElement.ended && !isInterrupted) return;
+      isInterrupted = false;
+      console.log('MediaPlayer: Resuming radio after interruption');
+      if (audioElement.ended || audioElement.error) {
+        audioElement.src = this.radioStreamUrl;
+        audioElement.load();
       }
+      audioElement.play().catch(err => {
+        console.warn('MediaPlayer: Resume after interruption failed:', err);
+        isInterrupted = true;
+      });
     };
 
     const setupMediaSession = () => {
@@ -245,6 +251,7 @@ class MediaPlayer {
         }
         shouldBePlaying = true;
         isInterrupted = false;
+        userPaused = false;
         audioElement.play().then(() => {
           isPlaying = true;
           if ('mediaSession' in navigator) {
@@ -258,6 +265,7 @@ class MediaPlayer {
     };
 
     const pauseRadio = () => {
+      userPaused = true;
       shouldBePlaying = false;
       isInterrupted = false;
       audioElement.pause();
@@ -277,10 +285,11 @@ class MediaPlayer {
     });
 
     audioElement.addEventListener('pause', () => {
-      if (shouldBePlaying && (document.hidden || !document.hasFocus())) {
-        isInterrupted = true;
-      } else {
+      if (userPaused) {
         shouldBePlaying = false;
+        isInterrupted = false;
+      } else if (shouldBePlaying) {
+        isInterrupted = true;
       }
       isPlaying = false;
       if ('mediaSession' in navigator) {
@@ -292,6 +301,7 @@ class MediaPlayer {
     audioElement.addEventListener('play', () => {
       shouldBePlaying = true;
       isInterrupted = false;
+      userPaused = false;
       isPlaying = true;
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing';
@@ -301,6 +311,9 @@ class MediaPlayer {
 
     document.addEventListener('visibilitychange', resumeIfInterrupted);
     window.addEventListener('focus', resumeIfInterrupted);
+    window.addEventListener('pageshow', resumeIfInterrupted);
+    window.addEventListener('online', resumeIfInterrupted);
+    document.addEventListener('touchend', resumeIfInterrupted, { passive: true });
 
     setupMediaSession();
 

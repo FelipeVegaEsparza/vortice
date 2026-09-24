@@ -16,6 +16,14 @@ class AudioPlayer {
     this.audioElementId = options.audioElementId || 'radio-audio';
     this.playButtonId = options.playButtonId || 'play-btn';
     this.volumeSliderId = options.volumeSliderId || 'volume-slider';
+
+    // Estado interno para distinguir pausa del usuario vs. interrupción del sistema
+    this.shouldBePlaying = false;
+    this.isInterrupted = false;
+    this.userPaused = false;
+    this.resumeWatchdog = null;
+    this.boundResumeIfInterrupted = null;
+    this.boundGestureResume = null;
   }
 
   // Inicializar el reproductor
@@ -45,9 +53,6 @@ class AudioPlayer {
 
     // Audio element events
     if (this.audioElement) {
-      this.shouldBePlaying = false;
-      this.isInterrupted = false;
-
       this.audioElement.addEventListener('loadstart', () => {
         console.log('AudioPlayer: Loading started');
       });
@@ -64,46 +69,127 @@ class AudioPlayer {
       this.audioElement.addEventListener('play', () => {
         this.shouldBePlaying = true;
         this.isInterrupted = false;
+        this.userPaused = false;
         this.isPlaying = true;
+        if ('mediaSession' in navigator) {
+          navigator.mediaSession.playbackState = 'playing';
+        }
         this.onPlayCallback();
       });
 
+      // Un pause solo cuenta como acción del usuario si vino de pause().
+      // Cualquier otro pause (llamada, Siri, segundo plano, alarma) es una
+      // interrupción del sistema que debemos recordar para reanudar luego.
       this.audioElement.addEventListener('pause', () => {
-        if (this.shouldBePlaying && (document.hidden || !document.hasFocus())) {
-          this.isInterrupted = true;
-        } else {
-          this.shouldBePlaying = false;
-        }
         this.isPlaying = false;
+        if (this.userPaused) {
+          this.shouldBePlaying = false;
+          this.isInterrupted = false;
+        } else if (this.shouldBePlaying) {
+          this.isInterrupted = true;
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'paused';
+          }
+        }
         this.onPauseCallback();
       });
 
       this.audioElement.addEventListener('stalled', () => {
         console.warn('AudioPlayer: Stream stalled, will retry on resume');
       });
+
+      this.audioElement.addEventListener('ended', () => {
+        if (this.shouldBePlaying) {
+          this.isInterrupted = true;
+          this.resumeIfInterrupted();
+        }
+      });
     }
 
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && this.isInterrupted && this.shouldBePlaying) {
-        this.isInterrupted = false;
-        console.log('AudioPlayer: Resuming after interruption');
-        this.audioElement.play().catch(err => {
-          console.warn('AudioPlayer: Resume after interruption failed:', err);
-        });
-      }
-    });
+    this.boundResumeIfInterrupted = () => this.resumeIfInterrupted();
+    document.addEventListener('visibilitychange', this.boundResumeIfInterrupted);
+    window.addEventListener('focus', this.boundResumeIfInterrupted);
+    window.addEventListener('pageshow', this.boundResumeIfInterrupted);
+    window.addEventListener('online', this.boundResumeIfInterrupted);
+    if ('onresume' in document) {
+      document.addEventListener('resume', this.boundResumeIfInterrupted);
+    }
 
-    window.addEventListener('focus', () => {
-      if (this.isInterrupted && this.shouldBePlaying) {
-        this.isInterrupted = false;
-        console.log('AudioPlayer: Resuming on focus');
-        this.audioElement.play().catch(err => {
-          console.warn('AudioPlayer: Resume on focus failed:', err);
-        });
-      }
-    });
+    // iOS puede bloquear play() programático al volver de una llamada.
+    // Reintentamos en el primer toque/clic del usuario.
+    this.boundGestureResume = () => this.resumeIfInterrupted();
+    document.addEventListener('touchend', this.boundGestureResume, { passive: true });
+    document.addEventListener('click', this.boundGestureResume);
 
+    this.startResumeWatchdog();
     this.setupMediaSession();
+  }
+
+  // Reanudar si el sistema interrumpió la reproducción
+  resumeIfInterrupted() {
+    const el = this.audioElement;
+    if (!el || !this.shouldBePlaying) return;
+    if (!el.paused && !el.ended && !this.isInterrupted) return;
+
+    this.isInterrupted = false;
+    console.log('AudioPlayer: Reanudando tras interrupción');
+
+    // Una radio en vivo no tiene posición que conservar: si la conexión se
+    // cortó (llamada larga / suspensión) hay que reconectar el stream.
+    if (el.ended || el.error || el.networkState === 3) {
+      this.reconnectStream();
+      return;
+    }
+
+    const promise = el.play();
+    if (promise && promise.catch) {
+      promise.catch(err => {
+        console.warn('AudioPlayer: No se pudo reanudar, se reintentará al tocar:', err);
+        this.isInterrupted = true;
+      });
+    }
+  }
+
+  // Reconectar el stream en vivo (iOS puede dejarlo mudo tras una llamada)
+  reconnectStream() {
+    const el = this.audioElement;
+    if (!el || !this.streamUrl) return;
+    try {
+      el.src = this.streamUrl;
+      el.load();
+      if (this.shouldBePlaying) {
+        const promise = el.play();
+        if (promise && promise.catch) {
+          promise.catch(err => {
+            console.warn('AudioPlayer: Reintento de reconexión falló:', err);
+            this.isInterrupted = true;
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('AudioPlayer: Reconexión falló:', e);
+    }
+  }
+
+  // Vigilante: si la página está visible y debería sonar pero el audio está
+  // pausado (iOS no siempre dispara visibilitychange/focus), reanudar.
+  startResumeWatchdog() {
+    this.stopResumeWatchdog();
+    this.resumeWatchdog = setInterval(() => {
+      const el = this.audioElement;
+      if (!el || document.hidden || !this.shouldBePlaying) return;
+      if (el.paused) {
+        this.isInterrupted = true;
+        this.resumeIfInterrupted();
+      }
+    }, 5000);
+  }
+
+  stopResumeWatchdog() {
+    if (this.resumeWatchdog) {
+      clearInterval(this.resumeWatchdog);
+      this.resumeWatchdog = null;
+    }
   }
 
   setupMediaSession() {
@@ -145,6 +231,7 @@ class AudioPlayer {
     this.audioElement.volume = this.currentVolume / 100;
     this.shouldBePlaying = true;
     this.isInterrupted = false;
+    this.userPaused = false;
 
     return this.audioElement.play()
       .then(() => {
@@ -166,6 +253,7 @@ class AudioPlayer {
   pause() {
     if (!this.audioElement) return;
 
+    this.userPaused = true;
     this.shouldBePlaying = false;
     this.isInterrupted = false;
     this.audioElement.pause();
@@ -212,6 +300,25 @@ class AudioPlayer {
 
   // Destruir el reproductor
   destroy() {
+    this.stopResumeWatchdog();
+
+    if (this.boundResumeIfInterrupted) {
+      document.removeEventListener('visibilitychange', this.boundResumeIfInterrupted);
+      window.removeEventListener('focus', this.boundResumeIfInterrupted);
+      window.removeEventListener('pageshow', this.boundResumeIfInterrupted);
+      window.removeEventListener('online', this.boundResumeIfInterrupted);
+      if ('onresume' in document) {
+        document.removeEventListener('resume', this.boundResumeIfInterrupted);
+      }
+      this.boundResumeIfInterrupted = null;
+    }
+
+    if (this.boundGestureResume) {
+      document.removeEventListener('touchend', this.boundGestureResume);
+      document.removeEventListener('click', this.boundGestureResume);
+      this.boundGestureResume = null;
+    }
+
     this.pause();
     if (this.audioElement) {
       this.audioElement.src = '';

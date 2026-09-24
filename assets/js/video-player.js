@@ -148,6 +148,7 @@ class VideoPlayer {
     if (this.videoElement) {
       this.shouldBePlaying = false;
       this.isInterrupted = false;
+      this.userPaused = false;
 
       this.videoElement.addEventListener('loadstart', () => this.showLoading());
       this.videoElement.addEventListener('canplay', () => this.hideLoading());
@@ -156,36 +157,55 @@ class VideoPlayer {
       this.videoElement.addEventListener('play', () => {
         this.shouldBePlaying = true;
         this.isInterrupted = false;
+        this.userPaused = false;
         if ('mediaSession' in navigator) {
           navigator.mediaSession.playbackState = 'playing';
         }
         this.onPlay();
       });
 
+      // Un pause solo es del usuario si vino de pause(); el resto son
+      // interrupciones del sistema (llamada, segundo plano) a recordar.
       this.videoElement.addEventListener('pause', () => {
-        if (this.shouldBePlaying && (document.hidden || !document.hasFocus())) {
-          this.isInterrupted = true;
-        } else {
+        if (this.userPaused) {
           this.shouldBePlaying = false;
-        }
-        if ('mediaSession' in navigator) {
-          navigator.mediaSession.playbackState = 'paused';
+          this.isInterrupted = false;
+        } else if (this.shouldBePlaying) {
+          this.isInterrupted = true;
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'paused';
+          }
         }
         this.onPause();
       });
 
-      this.resumeIfInterrupted = () => {
-        if (this.isInterrupted && this.shouldBePlaying && this.videoElement.paused) {
-          this.isInterrupted = false;
-          console.log('VideoPlayer: Resuming after interruption');
-          this.videoElement.play().catch(err => {
-            console.warn('VideoPlayer: Resume after interruption failed:', err);
-          });
+      this.videoElement.addEventListener('ended', () => {
+        if (this.shouldBePlaying) {
+          this.isInterrupted = true;
+          this.resumeIfInterrupted();
         }
+      });
+
+      this.resumeIfInterrupted = () => {
+        if (!this.shouldBePlaying) return;
+        if (!this.videoElement.paused && !this.videoElement.ended && !this.isInterrupted) return;
+        this.isInterrupted = false;
+        console.log('VideoPlayer: Resuming after interruption');
+        if (this.videoElement.ended || this.videoElement.error) {
+          this.loadStream(this.streamUrl);
+          return;
+        }
+        this.videoElement.play().catch(err => {
+          console.warn('VideoPlayer: Resume after interruption failed:', err);
+          this.isInterrupted = true;
+        });
       };
 
       document.addEventListener('visibilitychange', this.resumeIfInterrupted);
       window.addEventListener('focus', this.resumeIfInterrupted);
+      window.addEventListener('pageshow', this.resumeIfInterrupted);
+      window.addEventListener('online', this.resumeIfInterrupted);
+      document.addEventListener('touchend', this.resumeIfInterrupted, { passive: true });
 
       this.setupMediaSession();
     }
@@ -236,7 +256,7 @@ class VideoPlayer {
           console.log('VideoPlayer: HLS manifest parsed successfully');
           this.hideLoading();
           
-          if (this.options.autoplay) {
+          if (this.options.autoplay || this.shouldBePlaying) {
             this.play();
           }
         });
@@ -253,7 +273,7 @@ class VideoPlayer {
         this.videoElement.src = streamUrl;
         this.hideLoading();
         
-        if (this.options.autoplay) {
+        if (this.options.autoplay || this.shouldBePlaying) {
           this.play();
         }
       } else {
@@ -270,6 +290,7 @@ class VideoPlayer {
     if (this.videoElement) {
       this.shouldBePlaying = true;
       this.isInterrupted = false;
+      this.userPaused = false;
       this.videoElement.play().catch(error => {
         console.error('VideoPlayer: Error playing video:', error);
         this.showError();
@@ -279,6 +300,7 @@ class VideoPlayer {
 
   pause() {
     if (this.videoElement) {
+      this.userPaused = true;
       this.shouldBePlaying = false;
       this.isInterrupted = false;
       this.videoElement.pause();
@@ -385,6 +407,9 @@ class VideoPlayer {
     if (this.resumeIfInterrupted) {
       document.removeEventListener('visibilitychange', this.resumeIfInterrupted);
       window.removeEventListener('focus', this.resumeIfInterrupted);
+      window.removeEventListener('pageshow', this.resumeIfInterrupted);
+      window.removeEventListener('online', this.resumeIfInterrupted);
+      document.removeEventListener('touchend', this.resumeIfInterrupted);
       this.resumeIfInterrupted = null;
     }
 
