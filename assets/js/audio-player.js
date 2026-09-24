@@ -62,12 +62,14 @@ class AudioPlayer {
   setupEventListeners() {
     // Play button
     const playBtn = document.getElementById(this.playButtonId);
+    this.playButtonEl = playBtn || null;
     if (playBtn) {
       playBtn.addEventListener('click', () => this.toggle());
     }
 
     // Volume slider
     const volumeSlider = document.getElementById(this.volumeSliderId);
+    this.volumeSliderEl = volumeSlider || null;
     if (volumeSlider) {
       volumeSlider.addEventListener('input', (e) => {
         this.setVolume(e.target.value);
@@ -84,6 +86,7 @@ class AudioPlayer {
     // Al terminar la llamada la app vuelve a primer plano: reconectar.
     this.boundResumeIfInterrupted = () => {
       if (document.hidden) return;
+      this.debugLog('visibility/focus visible');
       this.resumeIfInterrupted();
     };
     document.addEventListener('visibilitychange', this.boundResumeIfInterrupted);
@@ -94,11 +97,19 @@ class AudioPlayer {
       document.addEventListener('resume', this.boundResumeIfInterrupted);
     }
 
-    // Reintento silencioso en el primer toque (por si iOS bloquea el autoplay)
-    this.boundGestureResume = () => this.resumeIfInterrupted();
+    // Reintento en el primer toque (iOS exige gesto). Se EXCLUYEN los controles
+    // para no chocar con el manejo play/pause del propio botón.
+    this.boundGestureResume = (e) => {
+      const t = e ? e.target : null;
+      if (t && this.playButtonEl && this.playButtonEl.contains(t)) return;
+      if (t && this.volumeSliderEl && this.volumeSliderEl.contains(t)) return;
+      this.debugLog('gesture resume');
+      this.resumeIfInterrupted();
+    };
     document.addEventListener('touchend', this.boundGestureResume, { passive: true });
     document.addEventListener('click', this.boundGestureResume);
 
+    this.setupDebug();
     this.startResumeWatchdog();
     this.setupMediaSession();
   }
@@ -120,12 +131,15 @@ class AudioPlayer {
 
     el.addEventListener('error', (e) => {
       if (!isCurrent()) return;
+      const code = e && e.target && e.target.error ? e.target.error.code : '?';
+      this.debugLog('event error code=' + code);
       console.error('AudioPlayer: Audio error:', e);
       this.handleError(e);
     });
 
     el.addEventListener('play', () => {
       if (!isCurrent()) return;
+      this.debugLog('event play');
       this.shouldBePlaying = true;
       this.isInterrupted = false;
       this.userPaused = false;
@@ -145,6 +159,7 @@ class AudioPlayer {
       this.isPlaying = true;
       this.isInterrupted = false;
       this.resumeFailures = 0;
+      this.debugLog('event playing');
       console.log('AudioPlayer: reproducción en curso');
     });
 
@@ -153,6 +168,7 @@ class AudioPlayer {
     // interrupción del sistema que debemos reconectar luego.
     el.addEventListener('pause', () => {
       if (!isCurrent()) return;
+      this.debugLog('event pause userPaused=' + this.userPaused);
       this.isPlaying = false;
       if (this.userPaused) {
         this.shouldBePlaying = false;
@@ -191,6 +207,8 @@ class AudioPlayer {
     if (!el || !this.shouldBePlaying) return;
     if (!el.paused && !el.ended && !this.isInterrupted) return;
 
+    this.debugLog('resume paused=' + el.paused + ' ended=' + el.ended +
+      ' interrupted=' + this.isInterrupted + ' rs=' + el.readyState);
     this.isInterrupted = false;
     this.lastResumeAttemptAt = Date.now();
     console.log('AudioPlayer: Reanudando tras interrupción');
@@ -212,6 +230,7 @@ class AudioPlayer {
     const old = this.audioElement;
     if (!old) return;
 
+    this.debugLog('recreate element');
     // Copiamos TODOS los atributos del elemento anterior (id, preload,
     // playsinline, crossorigin, etc.) para no alterar su configuración.
     const el = document.createElement('audio');
@@ -248,6 +267,7 @@ class AudioPlayer {
   // fuerza una conexión nueva; no alteramos la URL original).
   playFresh(el) {
     if (!this.streamUrl) return;
+    this.debugLog('playFresh should=' + this.shouldBePlaying);
     el.src = this.streamUrl;
     try { el.load(); } catch (e) {}
 
@@ -255,6 +275,7 @@ class AudioPlayer {
     const promise = el.play();
     if (promise && promise.catch) {
       promise.catch(err => {
+        this.debugLog('playFresh ERR ' + (err && err.name));
         console.warn('AudioPlayer: play() tras recrear falló, se reintentará:', err);
         this.isInterrupted = true;
         this.resumeFailures = (this.resumeFailures || 0) + 1;
@@ -292,6 +313,81 @@ class AudioPlayer {
       clearInterval(this.resumeWatchdog);
       this.resumeWatchdog = null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Diagnóstico en pantalla (solo desarrollo). Se activa tocando 5 veces el
+  // marcador de versión del footer, o con ?debug en la URL. No afecta al audio.
+  // ---------------------------------------------------------------------------
+  setupDebug() {
+    this.debugEnabled = false;
+    this.debugLines = [];
+    this._debugEl = null;
+    try {
+      this.debugEnabled = /[?&#]debug/.test(location.href) ||
+        localStorage.getItem('audio:debug') === '1';
+    } catch (e) {}
+    if (this.debugEnabled) this.enableDebugPanel();
+
+    // Trigger oculto: 5 toques rápidos en el marcador .app-version
+    const marker = document.querySelector('.app-version');
+    if (marker) {
+      let taps = 0, lastTap = 0;
+      marker.addEventListener('click', () => {
+        const now = Date.now();
+        if (now - lastTap > 1500) taps = 0;
+        lastTap = now;
+        taps++;
+        if (taps >= 5) {
+          taps = 0;
+          try { localStorage.setItem('audio:debug', '1'); } catch (e) {}
+          this.debugEnabled = true;
+          this.enableDebugPanel();
+          this.debugLog('debug ON');
+        }
+      });
+    }
+
+    this.debugLog('load #' + this.bumpLoadCount() + ' ios=' + this.isIOS +
+      ' visible=' + !document.hidden);
+  }
+
+  bumpLoadCount() {
+    try {
+      const n = parseInt(localStorage.getItem('audio:loads') || '0', 10) + 1;
+      localStorage.setItem('audio:loads', String(n));
+      return n;
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  enableDebugPanel() {
+    if (this._debugEl || !document.body) return;
+    const pre = document.createElement('pre');
+    pre.id = 'audio-debug';
+    pre.style.cssText = 'position:fixed;left:0;bottom:0;right:0;max-height:45vh;' +
+      'overflow:auto;margin:0;padding:6px 8px;background:rgba(0,0,0,.82);color:#0f0;' +
+      'font:10px/1.35 ui-monospace,Menlo,monospace;z-index:2147483647;' +
+      'pointer-events:none;white-space:pre-wrap;';
+    document.body.appendChild(pre);
+    this._debugEl = pre;
+    this.renderDebug();
+  }
+
+  renderDebug() {
+    if (this._debugEl) this._debugEl.textContent = this.debugLines.join('\n');
+  }
+
+  debugLog(msg) {
+    if (!this.debugEnabled) return;
+    try {
+      const t = new Date().toLocaleTimeString();
+      this.debugLines.push(t + ' ' + msg);
+      if (this.debugLines.length > 24) this.debugLines.shift();
+      this.renderDebug();
+    } catch (e) {}
+    console.log('[AudioDebug]', msg);
   }
 
   setupMediaSession() {
@@ -338,12 +434,14 @@ class AudioPlayer {
   setStreamUrl(url) {
     this.streamUrl = url;
     this.setupMediaSession();
+    this.debugLog('setStreamUrl ' + url);
     console.log('AudioPlayer: Stream URL set to:', url);
 
     // Si antes de la suspensión/recarga el usuario estaba escuchando,
     // reanudar apenas haya URL.
     if (this.readPlayIntent()) {
       this.shouldBePlaying = true;
+      this.debugLog('intent=playing -> resume en 400ms');
       setTimeout(() => this.resumeIfInterrupted(), 400);
     }
   }
@@ -404,6 +502,7 @@ class AudioPlayer {
 
     return this.audioElement.play()
       .then(() => {
+        this.debugLog('play() OK');
         console.log('AudioPlayer: Playing successfully');
         this.isPlaying = true;
         if ('mediaSession' in navigator) {
@@ -412,6 +511,7 @@ class AudioPlayer {
         this.onPlayCallback();
       })
       .catch(error => {
+        this.debugLog('play() ERR ' + (error && error.name));
         console.error('AudioPlayer: Error playing:', error);
         this.handleError(error);
         throw error;
@@ -436,6 +536,15 @@ class AudioPlayer {
 
   // Toggle play/pause
   toggle() {
+    // Tras una interrupción del sistema, el primer toque en Play debe
+    // REENGGANCHAR (recrear el elemento) en lugar de alternar a pausa.
+    if (this.isInterrupted) {
+      this.shouldBePlaying = true;
+      this.savePlayIntent(true);
+      this.debugLog('toggle -> reengage');
+      this.recreateAudioElement();
+      return;
+    }
     if (this.isPlaying) {
       this.pause();
     } else {
