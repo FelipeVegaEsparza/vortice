@@ -37,6 +37,10 @@ class AudioPlayer {
     this.lastResumeAttemptAt = 0;
     this.resumeFailures = 0;
     this.mediaSessionHandlersSet = false;
+    // Recuperación de "stalled": si tras la interrupción el stream quedó sin
+    // datos, recargamos la fuente (sin recrear el nodo).
+    this.stallTimer = null;
+    this.stallRecoveryAttempts = 0;
     // Tras N fallos seguidos el watchdog deja de reintentar solo (evita loops
     // y batería); el primer gesto del usuario vuelve a intentarlo.
     this.maxResumeFailures = options.maxResumeFailures || 6;
@@ -145,6 +149,8 @@ class AudioPlayer {
       this.isPlaying = true;
       this.isInterrupted = false;
       this.resumeFailures = 0;
+      this.stallRecoveryAttempts = 0;
+      this.clearStallRecovery();
       this.debugLog('event playing');
       if ('mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'playing';
@@ -170,6 +176,9 @@ class AudioPlayer {
 
     el.addEventListener('stalled', () => {
       this.debugLog('event stalled');
+      // Tras una interrupción, la conexión del stream pudo morir: si no se
+      // recupera sola, recargamos la fuente.
+      this.scheduleStallRecovery();
     });
 
     el.addEventListener('ended', () => {
@@ -207,6 +216,35 @@ class AudioPlayer {
         this.isInterrupted = true;
         this.resumeFailures = (this.resumeFailures || 0) + 1;
       });
+    }
+  }
+
+  // Si el elemento queda "stalled" (sin datos) programamos una recarga de la
+  // fuente. Se cancela en cuanto vuelve a sonar (event playing).
+  scheduleStallRecovery() {
+    if (this.stallTimer) return;
+    this.stallTimer = setTimeout(() => {
+      this.stallTimer = null;
+      const el = this.audioElement;
+      if (!el || !this.shouldBePlaying || document.hidden) return;
+      if (el.paused) { this.resumeIfInterrupted(); return; }
+      if (el.readyState >= 3) return; // ya hay datos, no tocar
+      if (this.stallRecoveryAttempts >= 8) return;
+      this.stallRecoveryAttempts++;
+      this.debugLog('stall recovery #' + this.stallRecoveryAttempts + ' -> reload');
+      el.src = this.streamUrl;
+      try { el.load(); } catch (e) {}
+      const p = el.play();
+      if (p && p.catch) {
+        p.catch(err => this.debugLog('stall reload play ERR ' + (err && err.name)));
+      }
+    }, 5000);
+  }
+
+  clearStallRecovery() {
+    if (this.stallTimer) {
+      clearTimeout(this.stallTimer);
+      this.stallTimer = null;
     }
   }
 
@@ -484,6 +522,7 @@ class AudioPlayer {
   // el src para no matar el audio en segundo plano (pagehide/background).
   destroy() {
     this.stopResumeWatchdog();
+    this.clearStallRecovery();
 
     if (this.boundResumeIfInterrupted) {
       document.removeEventListener('visibilitychange', this.boundResumeIfInterrupted);
