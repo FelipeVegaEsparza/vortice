@@ -95,17 +95,17 @@ body {
   flex: 1;
   min-width: 2px;
   background: linear-gradient(to top, 
-    rgba(149, 165, 166, 1) 0%, 
-    rgba(189, 195, 199, 0.9) 30%, 
-    rgba(255, 255, 255, 0.8) 70%,
+    rgba(170, 185, 188, 1) 0%, 
+    rgba(210, 216, 220, 0.95) 30%, 
+    rgba(255, 255, 255, 0.9) 70%,
     rgba(255, 255, 255, 1) 100%);
   border-radius: 2px 2px 0 0;
   height: 8px;
   transform-origin: bottom;
-  box-shadow: 0 0 6px rgba(149, 165, 166, 0.3);
-  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 12px rgba(200, 210, 215, 0.55);
+  border: 0.5px solid rgba(255, 255, 255, 0.3);
   transition: height 0.2s ease-out, opacity 0.2s ease-out;
-  opacity: 0.3;
+  opacity: 0.55;
 }
 
 /* Barras animadas solo cuando está reproduciéndose */
@@ -140,23 +140,23 @@ body {
 
 @keyframes audioBar {
   0%, 100% {
-    height: 8px;
-    opacity: 0.6;
+    height: 10px;
+    opacity: 0.75;
     transform: scaleY(1);
   }
   25% {
-    height: 40px;
-    opacity: 0.8;
+    height: 50px;
+    opacity: 0.9;
     transform: scaleY(1.2);
   }
   50% {
-    height: 120px;
+    height: 130px;
     opacity: 1;
     transform: scaleY(1.5);
   }
   75% {
-    height: 70px;
-    opacity: 0.9;
+    height: 80px;
+    opacity: 1;
     transform: scaleY(1.3);
   }
 }
@@ -171,8 +171,8 @@ body {
   justify-content: space-between;
   padding: 30px;
   background: rgba(255, 255, 255, 0.03);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 /* Header */
