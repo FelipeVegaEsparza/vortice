@@ -378,18 +378,20 @@ export async function getCurrentSong() {
     
     let artist = 'En Vivo';
     let songTitle = projectName;
+    let hasArtistInTitle = false;
     
     if (data.title && data.title.trim() !== '') {
       if (data.title.includes(' - ')) {
         const parts = data.title.split(' - ');
         artist = parts[0].trim();
         songTitle = parts.slice(1).join(' - ').trim();
+        hasArtistInTitle = true;
       } else {
         songTitle = data.title.trim();
       }
     }
     
-    if (data.djusername && data.djusername !== 'No DJ' && data.djusername !== 'AutoDJ') {
+    if (!hasArtistInTitle && data.djusername && data.djusername !== 'No DJ' && data.djusername !== 'AutoDJ') {
       artist = data.djusername;
     }
     
